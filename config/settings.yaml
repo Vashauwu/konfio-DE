@@ -1,0 +1,59 @@
+# Configuración del pipeline de tipos de cambio - Konfio Data Engineer Test
+#
+# Todos los valores clave del negocio viven aquí, no hardcodeados en el código.
+# Esto permite reejecutar el pipeline para otros periodos/monedas sin tocar src/.
+
+api:
+  base_url: "https://api.frankfurter.dev/v1"
+  base_currency: "USD"
+  # MXN y EUR son obligatorias por el enunciado; BRL y COP como "dos adicionales"
+  # (monedas de economías latinoamericanas comparables, relevantes para el
+  # contexto de negocio de una fintech de PyMEs en LatAm).
+  target_currencies:
+    - MXN
+    - EUR
+    - BRL
+    - COP
+  start_date: "2024-01-01"
+  end_date: "2024-06-30"
+  timeout_seconds: 10
+  max_retries: 5
+  backoff_base_seconds: 1.0   # backoff exponencial: base * 2^intento
+
+paths:
+  warehouse: "/app/warehouse"
+  events: "/app/events"
+  reports: "/app/reports"
+  loan_requests_csv: "/app/data/solicitudes_credito.csv"
+
+iceberg:
+  catalog_name: "local"
+  db_name: "db"
+  tables:
+    enriched: "tipos_cambio_enriquecidos"
+    monthly_metrics: "metricas_mensuales"
+    anomalies: "anomalias"
+    quality_report: "reporte_calidad"
+    daily_risk: "riesgo_diario"
+
+cdc:
+  # Llave de negocio: una fila = una moneda en una fecha específica.
+  business_keys:
+    - date
+    - currency
+  # Columnas de negocio consideradas para detectar cambios (excluye
+  # metadata/auditoría, que no debe disparar un falso UPDATE).
+  compare_columns:
+    - rate
+
+anomaly_detection:
+  z_score_threshold: 2.0
+  rolling_window_days: 30
+
+kafka:
+  enabled: true
+  bootstrap_servers: "kafka:9092"   # sobreescrito por env var KAFKA_BOOTSTRAP_SERVERS si está presente
+  topic: "exchange-rate-events"
+  # Reintentos a nivel productor (broker temporalmente no disponible, etc.)
+  max_retries: 5
+  retry_backoff_ms: 500
