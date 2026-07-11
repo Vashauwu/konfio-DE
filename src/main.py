@@ -22,7 +22,7 @@ import time
 
 from src.common import get_logger, get_spark_session, load_config
 from src.dag import DAG
-from src import cdc, events, extract, load, model, secondary_source, transform
+from src import cdc, events, extract, load, model, payments_domain, quality_ge, secondary_source, transform
 
 logger = get_logger("main")
 
@@ -124,6 +124,44 @@ def build_pipeline_dag(spark, cfg: dict) -> DAG:
         return df
 
     dag.add_step("daily_risk", _daily_risk, depends_on=["loan_requests", "read_current_state"])
+
+    # --- Rama de calidad formal (Great Expectations) ---
+    def _ge_validation(ctx):
+        summary = quality_ge.validate_enriched_rates(ctx["read_current_state"], api_cfg["target_currencies"])
+        quality_ge.write_validation_report(summary)
+        return summary
+
+    dag.add_step("ge_validation", _ge_validation, depends_on=["read_current_state"])
+
+    # --- Rama del dominio opcional de pagos/tarjetas ---
+    dag.add_step("customers", lambda ctx: payments_domain.extract_customers(spark))
+    dag.add_step("cards", lambda ctx: payments_domain.extract_cards(spark))
+    dag.add_step("transactions", lambda ctx: payments_domain.extract_transactions(spark))
+
+    def _dim_customer(ctx):
+        df = payments_domain.build_dim_customer(ctx["customers"])
+        load.overwrite_summary_table(spark, df, "dim_customer")
+        return df
+
+    dag.add_step("dim_customer_table", _dim_customer, depends_on=["customers"])
+
+    def _dim_card(ctx):
+        df = payments_domain.build_dim_card(ctx["cards"])
+        load.overwrite_summary_table(spark, df, "dim_card")
+        return df
+
+    dag.add_step("dim_card_table", _dim_card, depends_on=["cards"])
+
+    def _fact_transactions(ctx):
+        df = payments_domain.build_fact_transactions(ctx["transactions"], ctx["cards"], ctx["read_current_state"])
+        load.overwrite_summary_table(spark, df, "fact_transactions", partition_cols=["year", "month"])
+        return df
+
+    dag.add_step(
+        "fact_transactions_table",
+        _fact_transactions,
+        depends_on=["transactions", "cards", "read_current_state"],
+    )
 
     return dag
 

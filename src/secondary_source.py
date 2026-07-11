@@ -84,6 +84,14 @@ def build_daily_risk_view(loan_requests_df: DataFrame, exchange_rates_df: DataFr
     all_dates = loan_requests_df.select("date").distinct()
     rates_calendar = all_dates.join(mxn_rates, on="date", how="left")
 
+    # Nota de rendimiento: esta ventana NO tiene partitionBy porque es una
+    # única serie de tiempo diaria (no hay una columna natural para
+    # particionar, a diferencia de las ventanas en transform.py que sí
+    # particionan por 'currency'). Spark emite un WARN de "single partition"
+    # — con el volumen de este ejercicio (~180 filas, 6 meses) es
+    # irrelevante. Con un volumen mucho mayor, se particionaría por año y
+    # se resolverían los bordes entre particiones por separado; no se
+    # justifica esa complejidad aquí.
     w = Window.orderBy("date").rowsBetween(Window.unboundedPreceding, 0)
     rates_filled = rates_calendar.withColumn(
         "mxn_rate_filled", F.last("mxn_rate", ignorenulls=True).over(w)

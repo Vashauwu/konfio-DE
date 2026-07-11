@@ -25,6 +25,9 @@ paths:
   events: "/app/events"
   reports: "/app/reports"
   loan_requests_csv: "/app/data/solicitudes_credito.csv"
+  customers_csv: "/app/data/customers.csv"
+  cards_csv: "/app/data/cards.csv"
+  transactions_csv: "/app/data/transactions.csv"
 
 iceberg:
   catalog_name: "local"
@@ -35,6 +38,9 @@ iceberg:
     anomalies: "anomalias"
     quality_report: "reporte_calidad"
     daily_risk: "riesgo_diario"
+    dim_customer: "dim_customer"
+    dim_card: "dim_card"
+    fact_transactions: "fact_transactions"
 
 cdc:
   # Llave de negocio: una fila = una moneda en una fecha específica.

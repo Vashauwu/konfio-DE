@@ -4,3 +4,4 @@ PyYAML==6.0.2
 pytest==8.3.3
 tenacity==9.0.0
 kafka-python==2.0.2
+great_expectations==0.15.50

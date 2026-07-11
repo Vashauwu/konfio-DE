@@ -154,6 +154,48 @@ mensual comparada entre monedas, y el cruce solicitudes de crédito vs.
 tipo de cambio de la segunda fuente. Ver instrucciones de ejecución más
 abajo.
 
+### 6. Dominio opcional de pagos/tarjetas (`src/payments_domain.py`)
+
+Se modeló el dominio opcional que menciona la sección 4.4 del enunciado:
+`dim_customer` (1 fila = 1 cliente), `dim_card` (1 fila = 1 tarjeta, FK a
+cliente), y `fact_transactions` (1 fila = 1 transacción, FK a tarjeta) —
+datos sintéticos generados con semilla fija en `data/{customers,cards,
+transactions}.csv`.
+
+El punto interesante no es solo tener las tres tablas, sino que
+`fact_transactions` se **integra con el pipeline principal**: cada
+transacción se convierte a USD usando la tasa de `db.tipos_cambio_
+enriquecidos` correspondiente a la moneda de la tarjeta y la fecha (mismo
+patrón de forward-fill para fines de semana que en `secondary_source.py`).
+Esto demuestra que el modelo no vive aislado — depende de datos ya
+persistidos por otra rama del pipeline.
+
+Se carga con *overwrite* completo (no MERGE INTO/CDC) porque los CSVs son
+estáticos entre corridas — el requisito de CDC del enunciado ya está
+cubierto en profundidad por `fact_exchange_rates`; replicar la misma
+lógica aquí sería complejidad sin una razón de negocio real.
+
+### 7. Great Expectations (`src/quality_ge.py`)
+
+Se agregó como una capa de calidad **adicional y distinta** al reporte de
+calidad nativo (`db.reporte_calidad`), no un reemplazo:
+
+| | Responde la pregunta | Implementado en |
+|---|---|---|
+| Reporte de calidad nativo | ¿Qué fechas faltan y por qué (fin de semana vs. hueco real)? | `transform.py::build_quality_report` |
+| Great Expectations | ¿Los valores que SÍ llegaron cumplen las reglas de negocio (nulos, rangos, categorías válidas)? | `quality_ge.py::validate_enriched_rates` |
+
+Se usa la API clásica `SparkDFDataset` (paquete `great_expectations==0.15.x`)
+en vez del Data Context/Fluent API de versiones más nuevas — validar un
+DataFrame puntual dentro de un pipeline batch no justifica el andamiaje
+completo de datasources/checkpoints/stores en YAML que trae la API nueva.
+Mismo criterio de simplicidad que ya se aplicó para no usar Airflow.
+
+Es un *gate* informativo, no bloqueante: si una expectativa falla, se
+loggea con detalle y se persiste en `/app/reports/ge_validation_result.json`,
+pero el pipeline continúa — igual filosofía que el reporte de calidad
+nativo.
+
 ## Decisiones de diseño y trade-offs
 
 ### Extracción
@@ -169,6 +211,12 @@ abajo.
   No se tratan como error; se documentan como tal en el reporte de calidad
   (`db.reporte_calidad`, columna `reason = 'weekend_or_holiday'`), distinto
   de un hueco real de datos (`'missing_data'`).
+- **Anclaje fuera de rango**: se observó que si `start_date` cae en un día
+  sin tasa publicada (ej. `2024-01-01`, feriado), la API puede devolver
+  también el último día hábil *anterior* al rango pedido (`2023-12-29`).
+  Se filtra explícitamente en `extract.py::_filter_to_configured_range`
+  en vez de asumir que la API respeta el rango exacto — con logging de
+  advertencia si algo se descarta.
 
 ### Transformación
 - **Ventanas móviles por número de observaciones, no por días calendario**:
@@ -292,6 +340,9 @@ config/
   settings.yaml        # toda la configuración parametrizable
 data/
   solicitudes_credito.csv  # segunda fuente de datos (CSV simulado)
+  customers.csv               # dominio de pagos: clientes
+  cards.csv                     # dominio de pagos: tarjetas
+  transactions.csv                # dominio de pagos: transacciones
 src/
   common.py              # SparkSession + config + logging compartidos
   dag.py                   # motor de DAG (orden topológico, detección de ciclos)
@@ -299,16 +350,20 @@ src/
   transform.py                 # limpieza, enriquecimiento, agregaciones, anomalías, calidad
   cdc.py                         # detección de cambios (hash de fila)
   secondary_source.py              # segunda fuente + join enriquecido
-  model.py                           # fact/dim
-  load.py                              # persistencia Iceberg (MERGE, particiones, time travel, compaction)
-  events.py                              # generación de eventos + publicación a Kafka
-  consumer_demo.py                         # consumidor de demo del topic Kafka
-  iceberg_demo.py                            # demo de time travel, schema evolution, compaction
-  main.py                                      # orquestador (construye y corre el DAG)
+  payments_domain.py                 # dominio opcional pagos/tarjetas + integración FX
+  quality_ge.py                        # validación con Great Expectations
+  model.py                               # fact/dim (tipos de cambio)
+  load.py                                  # persistencia Iceberg (MERGE, particiones, time travel, compaction)
+  events.py                                  # generación de eventos + publicación a Kafka
+  consumer_demo.py                             # consumidor de demo del topic Kafka
+  iceberg_demo.py                                # demo de time travel, schema evolution, compaction
+  main.py                                          # orquestador (construye y corre el DAG)
 tests/
   test_transform.py
   test_cdc.py
   test_secondary_source.py
+  test_payments_domain.py
+  test_extract.py
   conftest.py                             # fixture de SparkSession para tests
 notebooks/
   eda.ipynb                                 # análisis exploratorio sobre las tablas Iceberg
@@ -327,13 +382,17 @@ events/                                       # generado por el pipeline (evento
 | Uso de Iceberg | `src/load.py`: MERGE INTO, particiones, time travel, schema evolution, **compaction** (4/4, el enunciado pide 2) |
 | Testing | `tests/test_transform.py`, `tests/test_cdc.py`, `tests/test_secondary_source.py` — corridos automáticamente en CI |
 | Kafka | broker real (`docker-compose.yml`), productor y consumidor reales (`src/events.py`, `src/consumer_demo.py`) |
-| Extras | DAG explícito, segunda fuente + join, compaction, CI/CD, notebook de EDA, retry/backoff, config externalizada |
+| Extras | DAG explícito, segunda fuente + join, compaction, CI/CD, notebook de EDA, dominio de pagos/tarjetas, Great Expectations, retry/backoff, config externalizada |
 
 ## Limitaciones conocidas / próximos pasos
 
-- No se implementó Great Expectations por alcance/tiempo — el reporte de
-  calidad (`db.reporte_calidad`) cubre la validación mínima pedida de
-  forma nativa en Spark.
-  pedida de forma nativa en Spark.
-- El dominio opcional de pagos/tarjetas no se modeló (ver sección de
-  Modelado arriba).
+- Great Expectations y el dominio de pagos/tarjetas ya están implementados
+  (ver secciones 6 y 7 arriba) — la limitación restante es de alcance
+  menor: la migración a un orquestador real tipo Airflow no se hizo por
+  no justificarse para un batch de una sola corrida diaria (ver
+  discusión de trade-offs en la sección de DAG arriba).
+- `great_expectations==0.15.50` es una dependencia con bastantes paquetes
+  transitivos; si el build de Docker falla por conflicto de versiones,
+  la validación de GE se puede aislar en su propio ambiente/imagen sin
+  afectar el resto del pipeline (es un paso más del DAG, no una
+  dependencia estructural de las demás capas).
