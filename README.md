@@ -309,7 +309,7 @@ con mayor peso en la evaluación (40% combinado).
 
 1. Periodo de extracción: `2024-01-01` a `2024-06-30` (sugerido por el
    enunciado), configurable en `config/settings.yaml`.
-2. Monedas: `MXN`, `EUR` (obligatorias) + `BRL`, `COP` (adicionales,
+2. Monedas: `MXN`, `EUR` (obligatorias) + `BRL`, `CAD` (adicionales,
    elegidas por ser economías latinoamericanas comparables, relevantes
    para el contexto de negocio de una fintech de PyMEs en LatAm).
 3. Como no se dispone de dos snapshots reales de la API en distintos
